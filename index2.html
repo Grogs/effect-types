@@ -1,0 +1,298 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<title>reveal.js</title>
+
+		<link rel="stylesheet" href="css/reveal.css">
+		<link rel="stylesheet" href="css/theme/sky.css">
+
+		<!-- Theme used for syntax highlighting of code -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- Printing and PDF exports -->
+		<script>
+			var link = document.createElement( 'link' );
+			link.rel = 'stylesheet';
+			link.type = 'text/css';
+			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+			document.getElementsByTagName( 'head' )[0].appendChild( link );
+		</script>
+		<style>
+			.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+				text-transform: none;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+				<section data-markdown
+						 data-separator="^\n\n\n"
+						 data-separator-vertical="^\n\n"
+						 data-separator-notes="^Note:">
+					## Concurrency & Asychrony in Scala
+					by Greg Dorrell
+
+					Note:
+					- I work for HomeAway, part of Expedia Group.
+					- I starting learning Scala 9 years ago whilst at university.
+					- I'd studied Java, and was curious/interested in functional programming
+					- But I've also come to appreciate the libraries available for doing concurrent/parallel/async programming.
+
+
+					My first contact with concurrency in Scala
+					Note:
+					- Back in my 2011, in my first job, I was using Scala for some data-migration scripts
+					- But whilst working on those data-migration scripts, they were pretty slow pushing data to the new place via a REST endpoint.
+					- I realised it was an "embarrassingly parallel" problem to upload this collection of records to the new datasource
+					- Back in 2011, 2.9 had just come out with an awesome new feature - parallel collections!
+
+
+					## Parallel collections
+					```scala
+					def upload(doc: String): Unit = ...
+					val docs: Seq[String] = ...
+
+					//sequential
+					docs.foreach(upload)
+
+					//parallel
+					docs<mark>.par</mark>.foreach(upload)
+					```
+					Note:
+					- Already this was way better than my prior experience with concurrency - Java Threads, and all the fun that goes along with that - semaphores, locking, worrying about the Swing UI thread.
+
+
+					- Easy to use <span style="color:green">✔</span>
+					- Works with existing blocking libraries <span style="color:green">︎✔</span>
+					- It's still blocking. <span style="color:red">✘</span>
+					- Limited parallelism <span style="color:red">✘</span>
+
+					Note:
+					- Normal collections API, just add `.par`. No need for new concepts like Futures or Actors.
+					- The work is executed using a `TaskSupport`; by default it's using the global ExecutionContext.
+					- That means you have, by default, num_cores * 2 threads to work with.
+					- So this won't scale up too far, and may cause contension issues in our app if the ExecutionContext is used for anything else.
+					- It would be bad to do this per web request!
+
+
+					## Futures
+					```scala
+					def upload(doc: String): Future[Unit] = ...
+					val docs: Seq[String] = ...
+
+					docs.foreach(upload)
+					```
+					Note:
+					- Here we've takem our previous example, if `upload` returns Future... We'll get similar behaviour, we don't need to .
+					- But does it still suffer the same disadvantages of Parallel collection? Answer: It depends
+
+
+					Naive version of `upload`
+					```scala
+					import scala.concurrent.ExecutionContext.global
+					def upload(doc: String) = Future(blockingClient.post("/someUrl", doc))
+					```
+					Note:
+					- global EC defaults to the number of cores multipled by 2. So the concurrency of this is limited.
+					- also, this context is shared across your app... So everything else in your app has to wait.
+					- If you're using Akka and getting the ExecutionContext from there, same problem
+
+
+					## Risky solution
+					```scala
+					def upload(doc: String)(implicit ec: ExecutionContext) = Future(
+						blockingClient.post("/someUrl", doc)
+					)(ec)
+					```
+
+
+					## Valid solution #1
+					```scala
+					implicit val ioEC: ExecutionContext = 
+						ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
+
+					def upload(doc: String)() = Future(
+						blockingClient.post("/someUrl", doc)
+					)(ec)
+					```
+
+
+					## Valid solution #2
+					```scala
+					import scala.concurrent.ExecutionContext.global
+					def upload(doc: String) = Future( blocking {
+						blockingClient.post("/someUrl", doc)
+					})
+					```
+
+
+
+					Async `upload`
+					```scala
+					def upload(doc: String) = asyncClient.post("/someUrl", doc)
+					```
+					Note:
+					Our client of choice these days in Finagle. That's using Netty, and that's actually async. There's one threadpool, with size N, managing >N concurrent requests.
+
+
+
+					## Akka
+
+					TODO Diagram of Mailboxes
+
+					- Solves concurrency issues by not processing messages concurrently.
+					- helps solves issues related to concurrent access/modification around state
+					Note:
+					- In a previous job, I used Akka Actors.
+					- It was introduced with the idea that it would help with "scaling"
+					- In reality, it didn't help at all with that.
+					- We used Typed Actors (which have now been superceded by the much nicer Akka Typed).
+					- Akka can be really good when you want to manage/restrict concurrent access to/modification of state.
+					- For simple parallel computation over immutable data, it wasn't useful.
+					- Currently, working of request based systems, I aim to push state to an external datasource/database and make my code immutable.
+
+
+
+
+					...Then I changed jobs...
+					Note:
+					Until a couple of years ago, that was my understanding.
+					Then I started working in a team using async libraries for all IO, and Akka Streams to read from kafka topics.
+					I ended up revisiting both Akka and Futures, and so I want to share how my understanding evolved.
+
+
+					## Akka Streams
+					Note:
+					- I've mostly used akka-streams for working with Kafka, and once for processing large files.
+					- My experience has been positive.
+					- We avoid the Graph DSL, and instead try to keep a stream a simple linear stream when possible.
+					- Commiting is a bit awkward; you either use auto-commit, or work with Kafka's CommitableOffset directly: https://doc.akka.io/docs/akka-stream-kafka/current/consumer.html#offset-storage-in-kafka-committing
+					- My previous and current teams both independently created 'Commitable', a little wrapper around a value which holds the offset. We then define `map` and `traverse` etc. on it.
+					- I'm curious about other options like fs2-kafka and monix-kafka
+
+
+					## Futures revisited
+					Note:
+					We started using Futures alot in my previous company, and I learnt some things
+
+
+					## Parallel Futures
+					```scala
+					val eventualA = mySlowRequest(1)
+					val eventualB = mySlowRequest(2)
+					for {
+						a <- eventualA
+						b <- eventualB
+					} yield a + b
+					//versus
+					for {
+						a <- mySlowRequest(1)
+						b <- mySlowRequest(2)
+					} yield a + b
+					```
+
+
+					The sequential behaviour makes sense given:
+					```
+					for {
+						a <- mySlowRequest(1)
+						b <- mySlowRequest(2)
+					} yield a + b
+					//is equivalent to
+					mySlowRequest(1).flatMap(a => mySlowRequest(2).map(b => a + b))
+					```
+
+
+					## Future.traverse
+					```scala
+					def mySlowRequest(input: Int): Future[String] = ...
+
+					val someInputs: List[Int] = ...
+
+					//Q1 implement getResponses
+					def getResponses(input: List[Int]): Future[List[String]] = {
+						???
+					}
+					```
+
+
+
+					Throttling Concurrent Asynchronous Code  
+					- We were using Futures for batch jobs
+					- e.g. "Fetch the latest review score for 300k hotels and write to a database"]
+					Note:
+					- This sort of large-scale concurrency has been a recurring theme in my career for the last few years.
+					- And we found a need to throttle our async calls.
+
+
+					What we wanted to write:  
+
+					```scala
+					def fetchIds(): Future[Seq[Id]] = ...
+					def fetchScore(id: Id): Future[(Id, Score)] = ...
+					def persist(idScorePair: (Id, Score)): Future[Unit] = ...
+
+					for {
+						ids    <- fetchIds()
+						scores <- Future.traverse(ids)(fetchScore)
+						_      <- Future.traverse(scores)(persist)
+					} yield ()
+					```
+					
+					
+					However:
+					- Future.traverse is eager
+					- Nothing in standard library to throttle it. 
+					Note:
+					- Future.traverse eagerly schedules kicks off every Future immediately!
+					- For blocking code wrapped in Futures, you can manage concurrency through the execution context. 
+					- But what about with real async libraries?
+
+
+					We wanted Future.traverse but with restricted concurrency.
+
+
+					### The akka-streams approach
+
+					```scala
+					val parallelism = 100
+					Source
+						.fromFuture(fetchIds)
+						.mapAsync(parallelism)(fetchScore)
+						.mapAsync(parallelism)(persist)
+						.run
+					```
+
+				</section>
+			</div>
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.js"></script>
+
+		<script>
+            // Reveal.configure({ slideNumber: 'c/t' });
+            // Reveal.configure({ showSlideNumber: 'speaker' });
+
+            // More info about config & dependencies:
+			// - https://github.com/hakimel/reveal.js#configuration
+			// - https://github.com/hakimel/reveal.js#dependencies
+			Reveal.initialize({
+				history: true,
+                controlsTutorial: false,
+                slideNumber: 'c/t',
+                showSlideNumber: 'speaker',
+				dependencies: [
+					{ src: 'plugin/markdown/marked.js' },
+					{ src: 'plugin/markdown/markdown.js' },
+					{ src: 'plugin/notes/notes.js', async: true },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } }
+				]
+			});
+		</script>
+	</body>
+</html>

@@ -7,7 +7,7 @@
 		<title>reveal.js</title>
 
 		<link rel="stylesheet" href="css/reveal.css">
-		<link rel="stylesheet" href="css/theme/black.css">
+		<link rel="stylesheet" href="css/theme/sky.css">
 
 		<!-- Theme used for syntax highlighting of code -->
 		<link rel="stylesheet" href="lib/css/zenburn.css">
@@ -20,12 +20,358 @@
 			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
 			document.getElementsByTagName( 'head' )[0].appendChild( link );
 		</script>
+		<style>
+			.reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {
+				text-transform: none;
+			}
+		</style>
 	</head>
 	<body>
 		<div class="reveal">
 			<div class="slides">
-				<section>Slide 1</section>
-				<section>Slide 2</section>
+				<section data-markdown
+						 data-separator="^\n\n\n"
+						 data-separator-vertical="^\n\n"
+						 data-separator-notes="^Note:">
+					## Concurrency & Asynchrony in Scala
+					by Greg Dorrell
+
+					Note:
+					- I work for Expedia Group. I moved offices in September, but until then I worked just down the road in Angel.
+					- So if you want any restaurant recommendations for lunch or dinner, or a pub, let me know
+					- This talk was originally meant to be all about an overview of the different concurrency libraries in Scala.
+					- And I think Scala is a language without strong opinions, instead it provides different options.
+						- You can write Scala as better Java
+						- You can use the Akka ecosystem
+						- you can write functional code (even then, it can be cats or scalaz)
+						- Play vs Akka-Http vs Http4s vs Finagle (and Finch)
+					- In this talk, we're going to take a look at some of the options around concurrency is Scala. And we're really going to dive into some of the issues around concurrent IO.
+
+
+					Scala is a language with lots of choice
+					Note:
+					- If we look at programming style...
+					- You can write Scala as better Java
+					- You can use the Akka ecosystem and do reactive programming.
+					- You can write functional code (and even then, it can be cats or scalaz)
+					- If we look at HTTP libraries, there's a lot of choice to: play, akka http, http4s, finagle.
+					- This can be overwhelming, especially as a beginner. Which style of Scala should you use, which http library should you use?
+					- But I see it as an advantage. I like that I've been able to start with better Java, and gradually introduce reactive or functional.
+
+
+					Concurrency options:
+					- Futures
+					- Akka Actors
+					- Akka Streams
+					- Monix
+					- Cats Effect
+					- ZIO
+					Note:
+					- The same is try with concurrency. There's a lot of different options out there.
+					- So today we're going to take a look at a number of them.
+					- I want to give you an idea of where you might use Akka Streams, or why you might use Monix Task instead of Scala's Future.
+					- But I'm also going to focus on some of the details, and the pitfalls I've come across, and how I've solved them.
+
+
+
+					My first contact with concurrency in Scala
+					Note:
+					- So, we'll start where I started, which was back in my first job where I used Scala.
+					- I was using Scala for some data-migration scripts.
+					- They would fetch a document from one place, transform it a bit, and upload them to a new system via a REST endpoint.
+					- But whilst working on those data-migration scripts, they were annoying slow pushing data to the new system via a REST endpoint.
+					- I realised it was an "embarrassingly parallel" problem to upload this collection of records to the new datasource
+					- Back in 2011, 2.9 had just come out with an awesome new feature - parallel collections!
+
+
+					## Parallel collections
+					```scala
+					def upload(doc: String): Unit = ...
+					val docs: Seq[String] = ...
+
+					//sequential
+					docs.foreach(upload)
+
+					//parallel
+					docs<mark>.par</mark>.foreach(upload)
+					```
+					Note:
+					- Already this was way better than my prior experience with concurrency - Java Threads, and all the fun that goes along with that - semaphores, locking.
+					- As you start using immutability, those issues around modifying shared state go away. But there are still other issues we can hit, and we'll take a look at those.
+
+
+					- Easy to use <span style="color:green">✔</span>
+					- Works with existing blocking libraries <span style="color:green">︎✔</span>
+					- It's still blocking. <span style="color:red">✘</span>
+					- Limited parallelism <span style="color:red">✘</span>
+
+					Note:
+					- Normal collections API, just add `.par`. No need for new concepts like Futures or Actors.
+					- Who is familiar with the execution context?
+					- global EC defaults to the number of cores multipled by 2. So the concurrency of this is limited.
+					- The work is executed using a `TaskSupport`; by default it's using the global ExecutionContext.
+					- That means you have, by default, num_cores * 2 threads to work with.
+					- Global EC is great for CPU bound work, but not blocking
+					- So this won't scale up too far, and may cause contension issues in our app if the ExecutionContext is used for anything else.
+					- It would be bad to do this per web request!
+
+
+
+					## Futures
+					```scala
+					def upload(doc: String): Future[Unit] = ...
+					val docs: Seq[String] = ...
+
+					docs.foreach(upload)
+					```
+					Note:
+					- Here we've taken our previous example, and changed `upload` to return Future.
+					- If you need to work with the result of the Future, or start composing them, you'll need to start `map`ping and `flatMap`ping over them.
+					- So they're a bit more complicated, but in this example, I can get away with very similar usage to before.
+					- But the question is: does this remove the disadvantages of Parallel collection? Answer: It depends
+
+
+					Naive version of `upload`
+					```scala
+					import scala.concurrent.ExecutionContext.global
+					def upload(doc: String) = Future(blockingClient.post("/someUrl", doc))
+					```
+					Note:
+					- All the same problems as parallel collections
+
+					- also, this context is shared across your app... So everything else in your app has to wait.
+					- If you're using Akka and getting the ExecutionContext from there, same problem
+
+
+					## Risky solution
+					```scala
+					def upload(doc: String)(implicit ec: ExecutionContext) = Future(
+						blockingClient.post("/someUrl", doc)
+					)
+					```
+					Note:
+					- This passes off the responsibility to the caller.
+					- But the caller has no idea what you're doing with the execution context.
+					- They'll probably use global, and it won't go too well.
+					- I've been bitten by this. So when I see application code taking an implicit execution context, I'm suspicious and have to go look at the implementation. Avoid this.
+
+
+					## Valid solution #1
+					```scala
+					implicit val ioEC: ExecutionContext = 
+						ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
+
+					def upload(doc: String)() = Future(
+						blockingClient.post("/someUrl", doc)
+					)(ec)
+					```
+
+
+					## Valid solution #2
+					```scala
+					import scala.concurrent.ExecutionContext.global
+					def upload(doc: String) = Future( blocking {
+						blockingClient.post("/someUrl", doc)
+					})
+					```
+
+
+					Async `upload`
+					```scala
+					def upload(doc: String) = asyncClient.post("/someUrl", doc)
+					```
+					Note:
+					- For a long time, I didn't really understand how you could actually do this asynchronously.
+					- And understanding that is a topic for another talk. But at a glance:
+					- With Java IO you have streams, and when you read a byte from a stream you block the thread you're on until it's available.
+					- With Java NIO (hand-wave, there's actually NIO and NIO2!) you have buffers (with associated channels). And you can check if there's data to read in a buffer, but not block if there isn't.
+					- When there's something useful in the buffer, you can read it out, and put it somewhere. And if you completed a scala promise with that, you'd have async IO.
+					- So something has to check those buffers and read/write data to them. But you have have one or two threads managing many sockets.
+					- In my current team, we're fans of Twitter's Finagle, which uses Netty, which operates similarly to java NIO.
+
+
+					## Using Futures
+					Note:
+					I just went into a lot of detail about some of the subtilties of how to avoid some pitfalls with Fures. Let's take a step and look at their usage.
+
+
+					map and flatMap:
+					```scala
+					def fetchOldDoc(id: Int): Future[String]
+					def transform(oldDoc: String): String
+					def upload(doc: String): Future[Unit]
+
+					def update(id: Int): Future[Unit] = {
+						fetchOldDoc(id).map(transform).flatMap(upload)
+					}
+					```
+
+
+					for-comprehensions:
+					```scala
+					def fetchOldDoc(id: Int): Future[String]
+					def transform(oldDoc: String): String
+					def upload(doc: String): Future[Unit]
+
+					def update(id: Int): Future[Unit] = {
+						for {
+							old     <- fetchOldDoc(id)
+							updated  = transform(old)
+							_       <- upload(updated)
+						} yield ()
+					}
+					```
+
+
+					working with multiple futures:
+					```scala
+					def update(id: Int): Future[Unit]
+					val ids: Seq[int]
+
+					id.foreach(update)
+					```
+
+
+
+					## Parallel Futures
+					```scala
+					for {
+						_ <- upload(docA)
+						_ <- upload(docB)
+					} yield ()
+					//versus
+					val eventualA = upload(docA)
+					val eventualB = upload(docB)
+					for {
+					  _ <- eventualA
+					  _ <- eventualB
+					} yield ()
+					```
+
+
+					## Future.traverse
+					```scala
+					def upload(doc: String): Unit = ...
+					val docs: Seq[String] = ...
+
+					def uploadAll(docs: List[String]): Future[Unit] = {
+						???
+					}
+					```
+
+
+					What if there are a lot of documents?
+					Note:
+					- We're using async libraries for calling webservices or inserting to cassandra.
+					- And say we have a lot of documents (let's say 1000 or 10k).
+					- Futures are eager. If I traverse a list of 1000 items, we'll immediately kick off 1000 Futures.
+					- We often don't actually want to do that. The web service or database you're calling might not handle that.
+
+
+					Use case: Batch job
+
+					"Fetch the latest review score for 300k hotels and write to a database"]
+					Note:
+					- Let's say I have a batch job to update the review score for the whole inventory of hotels.
+					- This is a usecase I've come across a number of times.
+
+
+					```scala
+					def fetchIds(): Future[Seq[Id]] = ... //100k IDs
+					def fetchScore(id: Id): Future[(Id, Score)] = ...
+					def persist(idScorePair: (Id, Score)): Future[Unit] = ...
+
+					for {
+						ids    <- fetchIds()
+						scores <- Future.traverse(ids)(fetchScore)
+						_      <- Future.traverse(scores)(persist)
+					} yield ()
+					```
+
+					However:
+					- Future.traverse is eager
+					- Nothing in standard library to throttle it. 
+					Note:
+					- Future.traverse eagerly schedules kicks off every Future immediately!
+					- For blocking code wrapped in Futures, you can manage concurrency through the execution context. 
+					- But what about with real async libraries?
+					- Then I have a problem. If I fetch scores from a web service, it may not be able to handle that much traffic, and my Futures will fail.
+					- Or by doing lots of database writes at the end, you can degrade your datbase's read performance. That's an issue I've had with Cassandra.
+
+
+					With the standard library
+					Note:
+					- But we had this come up in batch job where we were just using Futures. And I was suprised find out you can do it yourself with Futures!
+					- But it's limited. If we do batches of 10, we have to wait for the slowest of each batch to finish before we start the next one.
+					- So instead of taking N * avg response time, it takes N * P90.
+					- Instead, a better option is an AsyncSemaphore.
+
+
+					## Akka Actors
+
+					Good for working with state in a concurrent system...
+					...Which is a problem I try to avoid.
+
+					Note:
+					- Solves concurrency issues by not processing messages concurrently.
+					- helps solves issues related to concurrent access/modification around state.
+					- Often you don't have state in your application; instead you an push it out to a database.
+					- Actors don't tackle long-running IO and problems associated with it.
+					- So although I've used it before, I've not really had a usecase where it's needed (instead of offloading to a DB).
+
+
+					...Then I changed jobs...
+					Note:
+					- Until a couple of years ago, that was my understanding: "Use Futures, avoid blocking IO. I don't need Akka."
+					- Then I started working in a team using async libraries for all IO, and Akka Streams to read from kafka topics.
+					- I ended up revisiting both Akka and Futures, and so I want to share how my understanding evolved.
+
+
+					## Akka Streams
+					Note:
+					- I've mostly used akka-streams for working with Kafka, and a bit for processing large files.
+					- My experience has been positive, and it's my go-to approach for working with Kafka.
+					- But, I've also found it doesn't play well with Cats/Scalaz. Should you handle errors in akka, or types?
+					- Developed some internal "best practices": We avoid the Graph DSL, and instead try to keep a stream a simple linear stream when possible.
+					- Handling committing with kafka is a bit awkward; you either use auto-commit, or work with Kafka's CommitableOffset directly: https://doc.akka.io/docs/akka-stream-kafka/current/consumer.html#offset-storage-in-kafka-committing
+					- My previous and current teams both independently created 'Commitable', a little wrapper around a value which holds the offset.
+					- I'm curious to try out other options like fs2-kafka and monix-kafka.
+
+
+					### The akka-streams solution
+
+					TODO check this runs
+
+					```scala
+					val parallelism = 100
+					Source
+						.fromFuture(fetchIds)
+						.mapAsync(parallelism)(fetchScore)
+						.mapAsync(parallelism)(persist)
+						.run
+					```
+					Note:
+					So, one approach is to use Akka Streams
+
+
+
+					AsyncSemaphore
+
+					RateLimiter
+
+
+					Cats Effect IO, Monix, ZIO
+					No eager evaluation. That gives you equational reasoning. That means the for comprehension with 2 futures exmple is different.
+					Inertia/existinglibraries usage of futures/akka steams etc. is the issue. And that's getting better!
+
+
+					- timing out, firstcompleteof
+					- resource management
+					https://twitter.com/jdegoes/status/1071757668757528576
+					pure/apply/async/error???
+					cats io - no concurrency? :O
+					but provides laws/abstractions
+				</section>
 			</div>
 		</div>
 
@@ -33,10 +379,17 @@
 		<script src="js/reveal.js"></script>
 
 		<script>
-			// More info about config & dependencies:
+            // Reveal.configure({ slideNumber: 'c/t' });
+            // Reveal.configure({ showSlideNumber: 'speaker' });
+
+            // More info about config & dependencies:
 			// - https://github.com/hakimel/reveal.js#configuration
 			// - https://github.com/hakimel/reveal.js#dependencies
 			Reveal.initialize({
+				history: true,
+                controlsTutorial: false,
+                slideNumber: 'c/t',
+                showSlideNumber: 'speaker',
 				dependencies: [
 					{ src: 'plugin/markdown/marked.js' },
 					{ src: 'plugin/markdown/markdown.js' },
