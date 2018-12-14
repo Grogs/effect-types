@@ -1,0 +1,19 @@
+import monix.eval.Task
+
+//object MonixObservable extends Example {
+//
+//  def uploadMonix(doc: String) = Task.fromFuture(upload(doc))
+////
+//def uploadAll(input: List[String], concurrency: Int): Task[List[Unit]] = {
+//  //    Task.traverse(input)(uploadMonix)
+//  val allUploads = input.map(uploadMonix)
+//  val uploadBatches = allUploads.grouped(concurrency).map(Task.gather)
+//  Task.sequence(uploadBatches).map(_.flatten.toList)
+//    .start
+//}
+//
+//  val docs = (1 to 10).toList.map(_.toString)
+//
+//  await(uploadAll(docs, 3).runToFuture)
+//
+//}

@@ -33,239 +33,146 @@
 						 data-separator="^\n\n\n"
 						 data-separator-vertical="^\n\n"
 						 data-separator-notes="^Note:">
-					## Concurrency & Asychrony in Scala
-					by Greg Dorrell
 
+
+
+					Throttling Futures
 					Note:
-					- I work for HomeAway, part of Expedia Group.
-					- I starting learning Scala 9 years ago whilst at university.
-					- I'd studied Java, and was curious/interested in functional programming
-					- But I've also come to appreciate the libraries available for doing concurrent/parallel/async programming.
+					I just went into a lot of detail about some of the subtilties of how to avoid some pitfalls with Fures. Let's take a step and look at their usage.
 
 
-					My first contact with concurrency in Scala
-					Note:
-					- Back in my 2011, in my first job, I was using Scala for some data-migration scripts
-					- But whilst working on those data-migration scripts, they were pretty slow pushing data to the new place via a REST endpoint.
-					- I realised it was an "embarrassingly parallel" problem to upload this collection of records to the new datasource
-					- Back in 2011, 2.9 had just come out with an awesome new feature - parallel collections!
-
-
-					## Parallel collections
+					map and flatMap:
 					```scala
-					def upload(doc: String): Unit = ...
-					val docs: Seq[String] = ...
+					def fetchOldDoc(id: Int): Future[String]
+					def transform(oldDoc: String): String
+					def upload(doc: String): Future[Unit]
 
-					//sequential
-					docs.foreach(upload)
-
-					//parallel
-					docs<mark>.par</mark>.foreach(upload)
-					```
-					Note:
-					- Already this was way better than my prior experience with concurrency - Java Threads, and all the fun that goes along with that - semaphores, locking, worrying about the Swing UI thread.
-
-
-					- Easy to use <span style="color:green">✔</span>
-					- Works with existing blocking libraries <span style="color:green">︎✔</span>
-					- It's still blocking. <span style="color:red">✘</span>
-					- Limited parallelism <span style="color:red">✘</span>
-
-					Note:
-					- Normal collections API, just add `.par`. No need for new concepts like Futures or Actors.
-					- The work is executed using a `TaskSupport`; by default it's using the global ExecutionContext.
-					- That means you have, by default, num_cores * 2 threads to work with.
-					- So this won't scale up too far, and may cause contension issues in our app if the ExecutionContext is used for anything else.
-					- It would be bad to do this per web request!
-
-
-					## Futures
-					```scala
-					def upload(doc: String): Future[Unit] = ...
-					val docs: Seq[String] = ...
-
-					docs.foreach(upload)
-					```
-					Note:
-					- Here we've takem our previous example, if `upload` returns Future... We'll get similar behaviour, we don't need to .
-					- But does it still suffer the same disadvantages of Parallel collection? Answer: It depends
-
-
-					Naive version of `upload`
-					```scala
-					import scala.concurrent.ExecutionContext.global
-					def upload(doc: String) = Future(blockingClient.post("/someUrl", doc))
-					```
-					Note:
-					- global EC defaults to the number of cores multipled by 2. So the concurrency of this is limited.
-					- also, this context is shared across your app... So everything else in your app has to wait.
-					- If you're using Akka and getting the ExecutionContext from there, same problem
-
-
-					## Risky solution
-					```scala
-					def upload(doc: String)(implicit ec: ExecutionContext) = Future(
-						blockingClient.post("/someUrl", doc)
-					)(ec)
+					def update(id: Int): Future[Unit] = {
+					fetchOldDoc(id).map(transform).flatMap(upload)
+					}
 					```
 
 
-					## Valid solution #1
+					for-comprehensions:
 					```scala
-					implicit val ioEC: ExecutionContext = 
-						ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
+					def fetchOldDoc(id: Int): Future[String]
+					def transform(oldDoc: String): String
+					def upload(doc: String): Future[Unit]
 
-					def upload(doc: String)() = Future(
-						blockingClient.post("/someUrl", doc)
-					)(ec)
+					def update(id: Int): Future[Unit] = {
+					for {
+					old     <- fetchOldDoc(id)
+					updated  = transform(old)
+					_       <- upload(updated)
+					} yield ()
+					}
 					```
 
 
-					## Valid solution #2
+					working with multiple futures:
 					```scala
-					import scala.concurrent.ExecutionContext.global
-					def upload(doc: String) = Future( blocking {
-						blockingClient.post("/someUrl", doc)
-					})
+					def update(id: Int): Future[Unit]
+					val ids: Seq[int]
+
+					id.foreach(update)
 					```
 
-
-
-					Async `upload`
-					```scala
-					def upload(doc: String) = asyncClient.post("/someUrl", doc)
-					```
-					Note:
-					Our client of choice these days in Finagle. That's using Netty, and that's actually async. There's one threadpool, with size N, managing >N concurrent requests.
-
-
-
-					## Akka
-
-					TODO Diagram of Mailboxes
-
-					- Solves concurrency issues by not processing messages concurrently.
-					- helps solves issues related to concurrent access/modification around state
-					Note:
-					- In a previous job, I used Akka Actors.
-					- It was introduced with the idea that it would help with "scaling"
-					- In reality, it didn't help at all with that.
-					- We used Typed Actors (which have now been superceded by the much nicer Akka Typed).
-					- Akka can be really good when you want to manage/restrict concurrent access to/modification of state.
-					- For simple parallel computation over immutable data, it wasn't useful.
-					- Currently, working of request based systems, I aim to push state to an external datasource/database and make my code immutable.
-
-
-
-
-					...Then I changed jobs...
-					Note:
-					Until a couple of years ago, that was my understanding.
-					Then I started working in a team using async libraries for all IO, and Akka Streams to read from kafka topics.
-					I ended up revisiting both Akka and Futures, and so I want to share how my understanding evolved.
-
-
-					## Akka Streams
-					Note:
-					- I've mostly used akka-streams for working with Kafka, and once for processing large files.
-					- My experience has been positive.
-					- We avoid the Graph DSL, and instead try to keep a stream a simple linear stream when possible.
-					- Commiting is a bit awkward; you either use auto-commit, or work with Kafka's CommitableOffset directly: https://doc.akka.io/docs/akka-stream-kafka/current/consumer.html#offset-storage-in-kafka-committing
-					- My previous and current teams both independently created 'Commitable', a little wrapper around a value which holds the offset. We then define `map` and `traverse` etc. on it.
-					- I'm curious about other options like fs2-kafka and monix-kafka
-
-
-					## Futures revisited
-					Note:
-					We started using Futures alot in my previous company, and I learnt some things
 
 
 					## Parallel Futures
 					```scala
-					val eventualA = mySlowRequest(1)
-					val eventualB = mySlowRequest(2)
 					for {
-						a <- eventualA
-						b <- eventualB
-					} yield a + b
+					_ <- upload(docA)
+					_ <- upload(docB)
+					} yield ()
 					//versus
+					val eventualA = upload(docA)
+					val eventualB = upload(docB)
 					for {
-						a <- mySlowRequest(1)
-						b <- mySlowRequest(2)
-					} yield a + b
-					```
-
-
-					The sequential behaviour makes sense given:
-					```
-					for {
-						a <- mySlowRequest(1)
-						b <- mySlowRequest(2)
-					} yield a + b
-					//is equivalent to
-					mySlowRequest(1).flatMap(a => mySlowRequest(2).map(b => a + b))
+					_ <- eventualA
+					_ <- eventualB
+					} yield ()
 					```
 
 
 					## Future.traverse
 					```scala
-					def mySlowRequest(input: Int): Future[String] = ...
+					def upload(doc: String): Unit = ...
+					val docs: Seq[String] = ...
 
-					val someInputs: List[Int] = ...
-
-					//Q1 implement getResponses
-					def getResponses(input: List[Int]): Future[List[String]] = {
-						???
+					def uploadAll(docs: List[String]): Future[Unit] = {
+					???
 					}
 					```
 
 
-
-					Throttling Concurrent Asynchronous Code  
-					- We were using Futures for batch jobs
-					- e.g. "Fetch the latest review score for 300k hotels and write to a database"]
+					What if there are a lot of documents?
 					Note:
-					- This sort of large-scale concurrency has been a recurring theme in my career for the last few years.
-					- And we found a need to throttle our async calls.
+					- We're using async libraries for calling webservices or inserting to cassandra.
+					- And say we have a lot of documents (let's say 1000 or 10k).
+					- Futures are eager. If I traverse a list of 1000 items, we'll immediately kick off 1000 Futures.
+					- We often don't actually want to do that. The web service or database you're calling might not handle that.
 
 
-					What we wanted to write:  
+					Use case: Batch job
+
+					"Fetch the latest review score for 300k hotels and write to a database"]
+					Note:
+					- Let's say I have a batch job to update the review score for the whole inventory of hotels.
+					- This is a usecase I've come across a number of times.
+
 
 					```scala
-					def fetchIds(): Future[Seq[Id]] = ...
+					def fetchIds(): Future[Seq[Id]] = ... //100k IDs
 					def fetchScore(id: Id): Future[(Id, Score)] = ...
 					def persist(idScorePair: (Id, Score)): Future[Unit] = ...
 
 					for {
-						ids    <- fetchIds()
-						scores <- Future.traverse(ids)(fetchScore)
-						_      <- Future.traverse(scores)(persist)
+					ids    <- fetchIds()
+					scores <- Future.traverse(ids)(fetchScore)
+					_      <- Future.traverse(scores)(persist)
 					} yield ()
 					```
-					
-					
+
 					However:
 					- Future.traverse is eager
-					- Nothing in standard library to throttle it. 
+					- Nothing in standard library to throttle it.
 					Note:
 					- Future.traverse eagerly schedules kicks off every Future immediately!
-					- For blocking code wrapped in Futures, you can manage concurrency through the execution context. 
+					- For blocking code wrapped in Futures, you can manage concurrency through the execution context.
 					- But what about with real async libraries?
+					- Then I have a problem. If I fetch scores from a web service, it may not be able to handle that much traffic, and my Futures will fail.
+					- Or by doing lots of database writes at the end, you can degrade your datbase's read performance. That's an issue I've had with Cassandra.
 
 
-					We wanted Future.traverse but with restricted concurrency.
 
 
-					### The akka-streams approach
 
-					```scala
-					val parallelism = 100
-					Source
-						.fromFuture(fetchIds)
-						.mapAsync(parallelism)(fetchScore)
-						.mapAsync(parallelism)(persist)
-						.run
-					```
+					## Akka Actors
+
+					Good for working with state in a concurrent system...
+					...Which is a problem I try to avoid.
+
+					Note:
+					- Solves concurrency issues by not processing messages concurrently.
+					- helps solves issues related to concurrent access/modification around state.
+					- Often you don't have state in your application; instead you an push it out to a database.
+					- Actors don't tackle long-running IO and problems associated with it.
+					- So although I've used it before, I've not really had a usecase where it's needed (instead of offloading to a DB).
+
+
+					...Then I changed jobs...
+					Note:
+					- Until a couple of years ago, that was my understanding: "Use Futures, avoid blocking IO. I don't need Akka."
+					- Then I started working in a team using async libraries for all IO, and Akka Streams to read from kafka topics.
+					- I ended up revisiting both Akka and Futures, and so I want to share how my understanding evolved.
+
+
+
+
+
+					RateLimiter
+
 
 				</section>
 			</div>
