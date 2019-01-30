@@ -39,17 +39,18 @@
 					#### by Greg Dorrell
 
 					Note:
-					- I'm Greg. I work for HomeAway, which is part of Expedia Group, but we have our own office down in Victoria. 
-					- But I also worked for Hotels.com before transferring HomeAway. I know Hotels, HomeAway, and Brand Expedia (also based here) all have Scala teams and are hiring. You're welcome to chat to me about that later if you like.
-					- Anyway, on with the talk. I'm going to talk about Effect Types...
+					- Hello everyone. I'm Greg. I used to work for Hotels.com in this office, but I transfered to another one of Expedia's brands, HomeAway, down in Victoria a few months back.
+					- I know we're hiring for a number of Scala roles in London across Expedia Group, youif you're curious, you're welcome to grab me later if you want to know about that.
+					- Anyway , on with the talk. I'm going to talk about Effect Types...
 
 
 					## Effect Types
 					
 					Note:
-					- What is it?
-					- A "general effect type" is a type that you use to encapulate side-effecting operations.
-					- I'm going advocate that you should use an Effect Type for side-effectful code.
+					- What is an effect type?
+					- If you use Slick for working with databases, then you've probably used DBIOAction. That's an effect type, but a bit of a specialist one that you wouldn't use throughout your codebase.
+					- We're going to talk about "general effect types", which are types for you to use to encapulate side-effectful code.
+					- I'm going advocate that you should use an Effect Type for your side-effectful code.
 
 
 					## Examples
@@ -58,20 +59,21 @@
 					- Monix Task
 
 					Note:
-					- A number of effect types have popped up in Scala in the last couple of years.
-					- Here's a few of them
-					- We'll take a look at these ones, and how they compare.
-					- BTW, another example is Slick's DBIO Action. We're going to talk about "general effect types", but it's interesting to note that Slick introduced its own effect type. That at least suggests effect types aren't just for "strong FP" codebases.
+					- There's a number of effect types that have popped up in Scala in the last couple of years.
+					- We're going to focus on these three.
+					- We'll take a look at how to use them, and how they compare to each other.
 
 
 					Not a good effect type:
 					## Future
 
 					Note: 
-					- We need to talk about Future.
-					- I like Futures. They really impressed me when I moved from Java to Scala.
-					- Working with them is so much better than working with Threads and locks.
-					- Unfortunately, a lot of us are handling side effects with Future.
+					- But first, we need to talk about Future. I basically want to convince you that Future isn't good for working with side-effectful code.
+					- And it's interesting, because I like Futures.
+					- They're a great way to work with concurrent and asynchronous code.
+					- They compose really nicely (they're monads, so you can use them in for-comprehensions)
+					- They're so much better than working with Threads directly and locks.
+					- Unfortunately, a lot of us are handling side effects with Future. (E.g. call a database or a webservice)
 
 
 					## Futures 
@@ -79,7 +81,6 @@
 					- Bad for working with side effects.
 
 					Note:
-					- Futures are placeholders for objects which may or may not exist yet.
 					- Future is eager
 					- Future is memoized
 					- They can be composed nicely (monadically - with for-comprehensions)
@@ -109,43 +110,36 @@
 					- And importantly, I probably have to be careful to run it at the right time when the system is in the right state.
 
 
-                    *demo*
+					*demo*
 
 
-                    ### Futures are good  
-                    
-                    Side effects are neccessary  
+					### Futures are good  
+					
+					Side effects are neccessary  
 
-                    #### Future  are bad for side effects
+					#### Future  are bad for side effects
 
 					Note:
 					- As soon as you do side effects inside a Future, it becomes hard to reason about and compose. 
-
-
-					What should you use instead?
-
-					Note:
 					- We need side effects, and we want to do them in parallel and asynchronously.
-					- I'm saying we shouldn't use Future, so we need something else.
-
-
-					ZIO / Cats Effect IO / Monix
-					
+					- It's just that Effect types are better for writing effectful async and concurrent code.					
 
 
 
-					Monix
+					## Monix
+					Note:
+					Let's start with Monix
 
 
 					A library for asynchronous programming in Scala
 					Note:
 					- What does that mean? It sounds super general.
 					- Well, Monix actually has a few different useful sub-projects
-                    - monix-execution provides utilities for working with `scala.concurrent`. Such as a scheduler, cancellable futures, other utilies like an AsyncSemaphore which I've found useful.
-                    - But today we're going to focus on Monix Task
+					- monix-execution provides utilities for working with `scala.concurrent`. Such as a scheduler, cancellable futures, other utilies like an AsyncSemaphore which I've found useful.
+					- But today we're going to focus on Monix Task
 
 
-                    monix-eval provides Task
+					monix-eval provides Task
 
 					Task is an effect type
 					Note:
@@ -155,33 +149,37 @@
 					- Task is an alternative way to handle effects
 
 
-                    Unlike a Future, a Task is not eager.
+					Unlike a Future, a Task is not eager.
 					Note: It's lazy
 
 
 					You have to explicitly run it.
 
 
-                    If you run a Task twice, it will actually run twice.
+					If you run a Task twice, it will actually run twice.
+					Note:
+					So it's not memoized
 
 
 					*demo*
 					Note:
-                    - DEMO
-                    - Other than being lazy and not memoized, it's pretty similar to Future.
-                    - It still has a failure case, which is Exception.
-                    - Timeout-able. Actually cancels. `memoize`, `memoizeOnSuccess`, `onErrorRestart`
+					- DEMO
+					- Other than being lazy and not memoized, it's pretty similar to Future.
+					- It still has a failure case, which is Exception.
+					- Timeout-able. Actually cancels. `memoize`, `memoizeOnSuccess`, `onErrorRestart`
 
 
-                    What if I want parallelism?
+					What about parallelism?
 					Note: 
-                    - By being lazy, we've made it more awkward to run Tasks in parallel
+					- By being lazy, we've made it more awkward to run Tasks in parallel
+					- They're referentially transparent, so "extract variable" in IntelliJ won't work.
+					- Instead, you have to be explicit about it.
 
 
-                    *demo*
+					*demo*
 
 
-                    What happened to the ExecutionContext? 
+					What happened to the ExecutionContext? 
 					Note:
 					- I've glossed over where these Tasks actually run.
 					- Like Future we need a threadpool which actually runs these tasks.
@@ -196,14 +194,37 @@
 					- Monix lets you create a Scheduler from an ExecutionContext. And provides convenience methods for creating them, e.g. for IO.
 
 
+					Other benefits
+					Note:
+					- So far I've focusing on them being better to reason about and work with.
+					- But there good reasons to use Monix or Cats IO, or ZIO, even without that.
 
-                    ## Cats Effect IO
+
+					### Performance
+
+					see https://bit.ly/2DIPiJw
+					Note:
+					- With Future, every time you `map` or `flatMap`, you schedule a task against an execution context.
+					- It goes into a queue and is then picked up.
+					- With all these effect types, it's lazy and you specify the threadpool at the end
+					- This allows `map` operations, and potentially a subset of `flatMap`s to be chained together and all run immediately after one another on the same thread.
+					- This can give significant performance improvements.
+
+
+					Resource Safety
+					Note:
+					- All of these effect types implement `cats.effect.Bracket` which provides resource safety
+					- Essentially this is equivalent to a finally block of a try-catch.
+
+
+
+					## Cats Effect IO
 					Note: This is another effect type, under the cats ecosystem
 
 
-                    Similar to Monix
+					Similar to Monix
 					Note:
-                    - Which is perhaps not surpising as the largest contributor to Cats Effect is the creator of Monix.
+					- Which is perhaps not surpising as the largest contributor to Cats Effect is the creator of Monix.
 					- But there are some differences. Mostly it's restrictions. 
 					- Monix is pragmatic. It's familiar coming from Future. It provides lots of convenience functions through its' API.
 					- Cats Effect API makes it harder to run IO's in paralle, for example. 
@@ -256,8 +277,16 @@
 					...an "effect" type can have Bracket, Sync, Async, and Concurrent
 
 
+					#### from https://twitter.com/impurepics
+					![](cats-effect-typeclasses-cheat-sheet.png)
+
+
 					ZIO, Cats IO, and Monix Task  
 					all implement these typeclasses.
+					Note:
+					- This means there's really good interop between them
+					- And libraries coded against cats effect can work with any of the effect types I've shown you
+					- E.g. Doobie, fs2, finch and http4s all work with all of these effect types.
 
 
 					Just as cats NonEmptyList is a more restricted List...
@@ -270,43 +299,38 @@
 
 
 
-					Other benefits
+					Disadvantages
+					- More to learn
+					- Less widely supported
+
 					Note:
-					- I've focused on the reasoning/composition argument.
-					- But there's a bunch of other good reasons.
+					- But actually not much more to learn. They compose the same.
+					- Adoption is pretty good. doobie, fs2, http4s, finch. 
+					- But if you're using Play or Akka Streams, you're going to have to interop.
+					- That's okay, just code your services against an effect type, then run to Future in your controller or `mapAsync`.
 
 
-					Performance
+					### Summary
+					- Side effects in Futures is bad.
+					- Effect types help with that and offer better performance, cancellation, resource safety
+					- Monix is the easiest to move to
+					- Cats and ZIO are more principled
+					- The fact ZIO is a bifunctor is less useful than expected
 
-					see https://bit.ly/2DIPiJw
 					Note:
-					- With Future, every time you `map` or `flatMap`, you schedule a task against an execution context.
-					- It goes into a queue and is then picked up.
-					- With all these effect types, it's lazy and you specify the threadpool at the end
-					- This allows `map` operations, and potentially a subset of `flatMap`s to be chained together and all run immediately after one another on the same thread.
-					- This can give significant performance improvements.
-
-
-					Resource Safety
-					Note:
-					- All of these effect types implement `cats.effect.Bracket` which provides resource safety
-					- Essentially this is equivalent to a finally block of a try-catch.
-
-
-
-					### Summary / My thoughts
 					- Side-effecting Future are hard to reason about and compose
 					- There are a number of good alternatives.
 					- But you also get better performance, proper timeouts, resource safety, useful concurrency primitives.
-					- Task is the easiest to migrate to from Future.
-					- ZIO lets you control the error type. 
-
-					Note:
-					- Monix is the most mature. The docs are great!
-					- scalaz ZIO is very principled, which prevents you from making mistakes, but can be awkward. The docs not very mature.
+					- I think Monix Task is the easiest to migrate to from Future. It's also the most mature and has really good docs.
+					- Cats and ZIO are both more principled. They make it harder to make mistakes, but in return it can be more awkward to find things in the API etc.
+					- Cats Effect also gives you the typeclasses, this is great - it massive helps the interop and ibrary support. but it doesn't mean you ahve to use Cats Effect IO.
+					- ZIO lets you control the error type. There's more important tax, the docs are still a work in progress
 					- Personally, I'm coding against cats effect and using Monix Task in personal projects.
 					- At work, we use cats extensively, and I believe it would be a good move to code against cats effect and use Monix.
-					- We also use EitherT a lot with Future... I'd like to be able to control the error type... But that doesn't work with Cats Effect, at least for now.
+					- We also use EitherT a lot with Future... I'd like to be able to control the error type... But that doesn't work with Cats Effect (and therefore libraries using it), at least for now.
+					- Trade offs:
+						- More to learn, but not that much I think.
+						- Less widely supported than Future.
 
 
 					# Questions?
@@ -363,18 +387,18 @@ https://pierangeloc.github.io/blog/2018/06/01/on-RT-and-FP
 		<script src="js/reveal.js"></script>
 
 		<script>
-            // Reveal.configure({ slideNumber: 'c/t' });
-            // Reveal.configure({ showSlideNumber: 'speaker' });
+			// Reveal.configure({ slideNumber: 'c/t' });
+			// Reveal.configure({ showSlideNumber: 'speaker' });
 
-            // More info about config & dependencies:
+			// More info about config & dependencies:
 			// - https://github.com/hakimel/reveal.js#configuration
 			// - https://github.com/hakimel/reveal.js#dependencies
 			Reveal.initialize({
 				history: true,
-                controlsTutorial: false,
+				controlsTutorial: false,
 				showNotes: true,
-                slideNumber: 'c/t',
-                showSlideNumber: 'speaker',
+				slideNumber: 'c/t',
+				showSlideNumber: 'speaker',
 				dependencies: [
 					{ src: 'plugin/markdown/marked.js' },
 					{ src: 'plugin/markdown/markdown.js' },
