@@ -33,217 +33,104 @@
 						 data-separator="^\n\n\n"
 						 data-separator-vertical="^\n\n"
 						 data-separator-notes="^Note:">
-					## Concurrency & Asynchrony in Scala
-					by Greg Dorrell
+					## Effect Types:
+					### What? Why? Which one?
+
+					#### by Greg Dorrell
 
 					Note:
-					- I work for HomeAway, which is part of Expedia Group. Both HomeAway and Hotels.com are hiring.
+					- I'm Greg. I work for HomeAway, which is part of Expedia Group, but we have our own office down in Victoria. 
+					- But I also worked for Hotels.com before transferring HomeAway. I know Hotels, HomeAway, and Brand Expedia (also based here) all have Scala teams and are hiring. You're welcome to chat to me about that later if you like.
+					- Anyway, on with the talk. I'm going to talk about Effect Types...
 
 
-					Scala is a language with lots of choice
+					## Effect Types
+					
 					Note:
-					- If we look at programming style...
-					- You can write Scala as better Java
-					- You can use the Akka ecosystem and do reactive programming.
-					- You can write functional code (and even then, it can be cats or scalaz)
-					- This can be overwhelming, especially as a beginner. Which style of Scala should you use?
-					- In that scenario, just decide on one as a team and be willing to evolve as you learn more.
-					- I see these variety of options as an advantage.
-					- I like that I've been able to start with better Java, and gradually introduce reactive or functional.
-					- I find it impressive we can use different techniques within one language
+					- What is it?
+					- A "general effect type" is a type that you use to encapulate side-effecting operations.
+					- I'm going advocate that you should use an Effect Type for side-effectful code.
 
 
-					Concurrency libraries:
-					- Futures
-					- Akka
-					- Monix
-					- Cats Effect
-					- ZIO
-					- ...
-					Note:
-					- The same is true with concurrency. There's a lot of different options out there.
-					- So today we're going to take a look at a number of them.
-					- I want to give you an idea of where you might use Akka Streams, or why you might use Monix Task instead of Scala's Future.
-					- But I'm also going to deep dive on Futures.
-					- And we'll look at some of the problems I've hit with Futures, which help motivate using some of the other options.
-
-
-
-					My first contact with concurrency in Scala
-					Note:
-					- So, we'll start where I started, which was back in my first job where I used Scala.
-					- I was using Scala for some data-migration scripts.
-					- They would fetch a document from one place, transform it a bit, and upload them to a new system via a REST endpoint.
-					- But whilst working on those data-migration scripts, they were annoying slow pushing data to the new system via a REST endpoint.
-					- I realised it was an "embarrassingly parallel" problem to upload this collection of records to the new datasource
-					- Back in 2011, 2.9 had just come out with an awesome new feature - parallel collections!
-
-
-					## Parallel collections
-					```scala
-					def upload(doc: String): Unit = ...
-					val docs: List[String] = ...
-
-					//sequential
-					docs.foreach(upload)
-
-					//parallel
-					docs<mark>.par</mark>.foreach(upload)
-					```
-					Note:
-					- Already this was way better than my prior experience with concurrency - Java Threads, and all the fun that goes along with that - semaphores, locking.
-					- As you start using immutability, those issues around modifying shared state go away. But there are still other issues we can hit, and we'll take a look at those.
-
-
-					- Easy to use <span style="color:green">✔</span>
-					- Works with existing blocking libraries <span style="color:green">︎✔</span>
-					- It's still blocking. <span style="color:red">✘</span>
-					- Limited parallelism <span style="color:red">✘</span>
+					## Examples
+					- Cats Effect IO
+					- Scalaz ZIO
+					- Monix Task
 
 					Note:
-					- Normal collections API, just add `.par`. No need for new concepts like Futures or Actors.
-					- Who is familiar with the execution context?
-					- global EC defaults to the number of cores multipled by 2. So the concurrency of this is limited.
-					- The work is executed using a `TaskSupport`; by default it's using the global ExecutionContext.
-					- That means you have, by default, num_cores * 2 threads to work with.
-					- Global EC is great for CPU bound work, but not blocking
-					- So this won't scale up too far, and may cause contension issues in our app if the ExecutionContext is used for anything else.
-					- It would be bad to do this per web request!
+					- A number of effect types have popped up in Scala in the last couple of years.
+					- Here's a few of them
+					- We'll take a look at these ones, and how they compare.
+					- BTW, another example is Slick's DBIO Action. We're going to talk about "general effect types", but it's interesting to note that Slick introduced its own effect type. That at least suggests effect types aren't just for "strong FP" codebases.
 
 
+					Not a good effect type:
+					## Future
 
-					## Futures
-					```scala
-					def upload(doc: String): Future[Unit] = ...
-					val docs: Seq[String] = ...
-
-					docs.foreach(upload)
-					```
-					Note:
-					- So here, we've changed upload to return a Future.
-					- Unfortunately, there's a problem here.
-					- I'm uploading all the documents, but I'm not waiting for them to finish uploading.
-					- If this was the end of my application, the app will just exit without finishing the upload
+					Note: 
+					- We need to talk about Future.
+					- I like Futures. They really impressed me when I moved from Java to Scala.
+					- Working with them is so much better than working with Threads and locks.
+					- Unfortunately, a lot of us are handling side effects with Future.
 
 
-					## Futures
-					```scala
-					def upload(doc: String): Future[Unit] = ...
-					val docs: Seq[String] = ...
-
-					val eventualUpdates = docs.map(upload)
-					val updateAll = Future.sequence(eventualUpdates)
-
-					Await.result(updateAll, Duration.Inf)
-					```
-					Note:
-					- We need to keep the Futures that `upload` returns and wait for them to finish.
-
-
-					Does this solve the problems of parallel collections?
-					Note:
-					- We've gone to the effort of learning about Future, and how to `sequence` it, and await its' result.
-					- So you would hope it solves our problems...
-
-
-					It depends
-
-
-
-					Naive version of `upload`
-					```scala
-					import scala.concurrent.ExecutionContext.global
-
-					def upload(doc: String) = Future(
-						blockingClient.post("/someUrl", doc)
-					)
-					```
-					Note:
-					- All the same problems as parallel collections
-					- also, this context is shared across your app... So everything else in your app has to wait.
-					- If you're using Akka and getting the ExecutionContext from there, same problem
-
-
-					Risky solution
-					```scala
-					def upload(doc: String)(implicit ec: ExecutionContext) = Future(
-						blockingClient.post("/someUrl", doc)
-					)
-					```
-					Note:
-					- This passes off the responsibility to the caller.
-					- But the caller has no idea what you're doing with the execution context.
-					- They'll probably use global, and it won't go too well.
-					- I've been bitten by this. So when I see application code taking an implicit execution context, I'm suspicious and have to go look at the implementation. Avoid this.
-
-
-					Custom ExecutionContext
-					```scala
-					implicit val ioEC: ExecutionContext =
-						ExecutionContext.fromExecutor(Executors.newFixedThreadPool(10))
-
-					def upload(doc: String) = Future(
-						blockingClient.post("/someUrl", doc)
-					)
-					```
-					Note:
-					- This will work.
-					- It won't slow down other parts of your application.
-					- You even have the ability to control how much concurrency there is.
-					- You can get to quite a lot of threads before it's a problem.
-
-
-					scala.concurrent.blocking
-					```scala
-					import scala.concurrent.ExecutionContext.global
-					import scala.concurrent.blocking
-					def upload(doc: String) = Future(
-						blocking {
-							blockingClient.post("/someUrl", doc)
-						}
-					)
-					```
-					Note:
-					- Here we wrap the blocking bit of code inside a `scala.concurrent.blocking` wrapper.
-					- This lets the execution context know that the code is blocking
-					- For the global execution context doesn't count that towards the concurrency level.
-					- So this will allow the ExecutionContext to create more threads above the limit for CPUs * 2.
-					- So it won't block your app... However it is now unbounded.
-					- A Thread by default takes 1MB of memory, that's just the memory overhead.
-					- So if we had 1000 documents, this would create 1000 new threads, and that would (for a short while) use 1GB of memory.
-					- When you start to have a few thousand documents, this can be a problem. So be careful.
-
-
-					Asynchronous non-blocking upload
-
-					```scala
-					def upload(doc: String) = asyncClient.post("/someUrl", doc)
-					```
+					## Futures 
+					- Good for asynchronous and concurrent code!
+					- Bad for working with side effects.
 
 					Note:
-					- For a long time, I didn't really understand how you could actually do this asynchronously.
-					- And understanding that is a topic for another talk. But at a glance:
-					- With Java IO you have streams, and when you read a byte from a stream you block the thread you're on until it's available.
-					- With Java NIO (hand-wave, there's actually NIO and NIO2!) you have buffers (with associated channels). And you can check if there's data to read in a buffer, but not block if there isn't.
-					- When there's something useful in the buffer, you can read it out, and put it somewhere. And if you completed a scala promise with that, you'd have async IO.
-					- So something has to check those buffers and read/write data to them. But you have have one or two threads managing many sockets.
-					- In my current team, we're fans of Twitter's Finagle, which uses Netty, which operates similarly to java NIO.
-					- This is also unbounded. In this scenario we don't have to worry about running out of memory..
-					- However, we can overload the remote webservice we're calling, or the database behind it.
-					- And that's a scenario I've hit at work, our cassandra cluster reads were impacted when we did lots of writes
-					- So we decided to throttle our writes.
+					- Futures are placeholders for objects which may or may not exist yet.
+					- Future is eager
+					- Future is memoized
+					- They can be composed nicely (monadically - with for-comprehensions)
+					- ...But only if they don't have side effects (or you're careful)!
 
 
+					> "creating a Future that induces a side-effect is in itself also a side-effect, due to Future's eager nature"
 
-					Throttling Future.traverse
-
-					[demo](https://embed.scalafiddle.io/embed?sfid=ZRt7Df5/10)
+					###### from https://stackoverflow.com/a/44196745
 
 					Note:
-					- But we had this come up in batch job where we were just using Futures. And I was suprised find out you can do it yourself with Futures!
-					- But it's limited. If we do batches of 10, we have to wait for the slowest of each batch to finish before we start the next one.
-					- So instead of taking N * avg response time, it takes N * P90.
-					- Instead, a better option is an AsyncSemaphore.
+					- This is an important point that's easy to gloss over (I know I did!)
+					- So, what does this mean?
+					- Well. As soon as you create a Future. It's scheduled against an ExecutionContext and runs.
+					- If inside the Future, you perform a side-effect, then just creating the Future causes a side effect!
+					- Okay... So the question is why should we care? Is this actually important? I don't have any problems with it!
+					
+
+					
+					## Why are side effects bad?
+
+					Note:
+					- Put Future aside for a second, why do we avoid side effects in most of our code?
+					- Avoiding side effects make it easier to reason about and compose. 
+					- This is the reason for FP and types. It's easier. 
+					- When I see a function which returns Unit, I have no idea what it does, and I have to go look. 
+					- And importantly, I probably have to be careful to run it at the right time when the system is in the right state.
+
+
+                    *demo*
+
+
+                    ### Futures are good  
+                    
+                    Side effects are neccessary  
+
+                    #### Future  are bad for side effects
+
+					Note:
+					- As soon as you do side effects inside a Future, it becomes hard to reason about and compose. 
+
+
+					What should you use instead?
+
+					Note:
+					- We need side effects, and we want to do them in parallel and asynchronously.
+					- I'm saying we shouldn't use Future, so we need something else.
+
+
+					ZIO / Cats Effect IO / Monix
+					
 
 
 
@@ -254,22 +141,13 @@
 					Note:
 					- What does that mean? It sounds super general.
 					- Well, Monix actually has a few different useful sub-projects
-
-
-					monix-execution provides utilities for working with `scala.concurrent`
-					Note:
-					One that's of interest to us is AsyncSemaphore...
-
-
-					Monix AsyncSemaphore ([demo](https://embed.scalafiddle.io/embed?sfid=5R6oHm4/4))
-
-					Note:
-					- This helps us throttle our Futures without waiting for a whole batch to finish.
+                    - monix-execution provides utilities for working with `scala.concurrent`. Such as a scheduler, cancellable futures, other utilies like an AsyncSemaphore which I've found useful.
+                    - But today we're going to focus on Monix Task
 
 
                     monix-eval provides Task
 
-					Task is an alternative "effect type" to Future
+					Task is an effect type
 					Note:
 					- Nothing about Future suggest you should do side effects inside them.
 					- You can use them for running CPU-bound referentially transparent code concurrently.
@@ -277,11 +155,11 @@
 					- Task is an alternative way to handle effects
 
 
-					Unlike a Future, a Task is not eager.
+                    Unlike a Future, a Task is not eager.
+					Note: It's lazy
+
 
 					You have to explicitly run it.
-					Note:
-					- When you create a Future, it immediately starts running
 
 
                     If you run a Task twice, it will actually run twice.
@@ -289,85 +167,70 @@
 
 					*demo*
 					Note:
-					- DEMO
-					- Cancellable. Timeout-able.
+                    - DEMO
+                    - Other than being lazy and not memoized, it's pretty similar to Future.
+                    - It still has a failure case, which is Exception.
+                    - Timeout-able. Actually cancels. `memoize`, `memoizeOnSuccess`, `onErrorRestart`
 
 
-
-					monix-reactive provides Observable
-
-
-					We've looked at a finite list of input documents.
+                    What if I want parallelism?
+					Note: 
+                    - By being lazy, we've made it more awkward to run Tasks in parallel
 
 
-					But streaming (AKA the Reactive Pattern) is also common.
+                    *demo*
+
+
+                    What happened to the ExecutionContext? 
 					Note:
-					- For me, that's mostly reading messages from Kafka
+					- I've glossed over where these Tasks actually run.
+					- Like Future we need a threadpool which actually runs these tasks.
+					- In Monix, that's called a scheduler.
+					
 
+					*demo*
 
-					Monix Observable is an implementation of the Reactive Pattern
-
-					With adapters to and from the Reactive Streams standard (java.util.concurrent.Flow)
-
-
-					The API is similar to Akka Streams
 					Note:
-					- So rather than demo both, let's take a look at Akka Streams
+					- You only provide it when you run your Task
+					- For CPU-bound stuff, use global. For blocking IO, use a separate scheduler. 
+					- Monix lets you create a Scheduler from an ExecutionContext. And provides convenience methods for creating them, e.g. for IO.
 
 
 
-                    ## Akka Streams
-
-					[demo](https://embed.scalafiddle.io/embed?sfid=j8YzfY7/5)
-
-
-					- Mature and widely adopted. ✔
-					- Some boilerplate to use it. ✘
-					- You have to use Future ✘
+                    ## Cats Effect IO
+					Note: This is another effect type, under the cats ecosystem
 
 
-
-					## Cats Effect
-
-					- It was started last April by Daniel Spiewak.
-					- The largest contributor now is Alexandru Nedelcu, who is the creator of Monix.
-
-
-					Provides an IO monad which is similar to Monix Task.
-
-
-					Provides typeclasses for effect types.
-
-
-					Just as List has Applicative, Monad, and Foldable...
-
-
-					...an "effect" type can have Sync, Async, and Concurrent
-
-
-					Monix Task also implements those typeclasses.
-
-
-					Just as cats NonEmptyList is a more restricted List...
-					...cats IO is a more restricted Task.
-
-
-					Check out Runar's great talk
-
-					"Constraints Liberate, Liberties Constrain"
-
-
-
-					## ZIO
-
-
-					Another effect type
+                    Similar to Monix
 					Note:
-					Like Task or cats IO or Future
+                    - Which is perhaps not surpising as the largest contributor to Cats Effect is the creator of Monix.
+					- But there are some differences. Mostly it's restrictions. 
+					- Monix is pragmatic. It's familiar coming from Future. It provides lots of convenience functions through its' API.
+					- Cats Effect API makes it harder to run IO's in paralle, for example. 
+
+					
+					*demo*
 
 
-					Implements the Cats Effect typeclasses
 
+					## Scalaz ZIO's IO
+
+
+					Once again, similar.
+					Note:
+					- I've not looked into it too much.
+					- But it's lazy and not memoized, so it's referentially transparent and easy to reason about.
+					
+
+					Main difference: ZIO's IO is a bifunctor
+					Note:
+					- Anything you can map over is a Functor.
+					- Anything where you have the idea or a left and right value is a bifunctor.
+					- In the standard library we have a Bifunctor - Either. You can map over the right hand side or the left hand side.
+					- With Future and Cats IO and Monix Task, there's a "left hand side" too. But it's always Throwable.
+					- ZIO lets you use any error type you like.
+					- This is great for people that are using Future of Either, and probably using monad transformers (EitherT), and probably wondering if they should just make all their errors Throwable (but not doing so because you lose the ability to restrict error type).
+					
 
 					You define the error type
 
@@ -380,29 +243,86 @@
 					- ZIO doesn't.
 
 
-
-					### Summary
-
-
-					**Use non-blocking libraries**
+					*demo*
+					
 
 
-					- Futures get to quite far.
-					- But there pitfalls.
+					Cats Effect also provides typeclasses for effect types.
 
 
-					My thoughts
+					Just as List has Applicative, Monad, and Foldable...
+
+
+					...an "effect" type can have Bracket, Sync, Async, and Concurrent
+
+
+					ZIO, Cats IO, and Monix Task  
+					all implement these typeclasses.
+
+
+					Just as cats NonEmptyList is a more restricted List...
+					...cats IO is a more restricted Task.
 					Note:
-					- I'm still using Futures and Akka-Streams quite a lot day-to-day.
-					- I'm not going to refactor all my apps.
-					- But when I hit issues, I'll be reaching for a different effect type.
-					- Those effects types have been rapidly evolving, but I most like working with Monix.
-					- It kinda sucks that Akka-Streams makes you use Future as your effect type.
-					- So I'll be looking to use Monix Observable in future
+					And ZIO is less restrictive (in that you choose the error type)
 
+
+					*demo*
+
+
+
+					Other benefits
+					Note:
+					- I've focused on the reasoning/composition argument.
+					- But there's a bunch of other good reasons.
+
+
+					Performance
+
+					see https://bit.ly/2DIPiJw
+					Note:
+					- With Future, every time you `map` or `flatMap`, you schedule a task against an execution context.
+					- It goes into a queue and is then picked up.
+					- With all these effect types, it's lazy and you specify the threadpool at the end
+					- This allows `map` operations, and potentially a subset of `flatMap`s to be chained together and all run immediately after one another on the same thread.
+					- This can give significant performance improvements.
+
+
+					Resource Safety
+					Note:
+					- All of these effect types implement `cats.effect.Bracket` which provides resource safety
+					- Essentially this is equivalent to a finally block of a try-catch.
+
+
+
+					### Summary / My thoughts
+					- Side-effecting Future are hard to reason about and compose
+					- There are a number of good alternatives.
+					- But you also get better performance, proper timeouts, resource safety, useful concurrency primitives.
+					- Task is the easiest to migrate to from Future.
+					- ZIO lets you control the error type. 
+
+					Note:
+					- Monix is the most mature. The docs are great!
+					- scalaz ZIO is very principled, which prevents you from making mistakes, but can be awkward. The docs not very mature.
+					- Personally, I'm coding against cats effect and using Monix Task in personal projects.
+					- At work, we use cats extensively, and I believe it would be a good move to code against cats effect and use Monix.
+					- We also use EitherT a lot with Future... I'd like to be able to control the error type... But that doesn't work with Cats Effect, at least for now.
 
 
 					# Questions?
+
+					slides:
+
+					http://gregd.me/effect-types/
+
+
+					## Resources
+					https://typelevel.org/cats-effect/
+					https://scalaz.github.io/scalaz-zio/
+					https://monix.io/docs/3x/eval/task.html
+
+					Note:
+
 				</section>
 			</div>
 		</div>
